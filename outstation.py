@@ -3,13 +3,13 @@ import logging
 import threading
 import time
 import uuid
+#  --- Logger ---
+from logging import getLogger, INFO
 
 import RPi.GPIO as GPIO
 import paho.mqtt.client as mqtt
 
-
-#  --- Logger ---
-from logging import getLogger, INFO
+import util.system as util
 from util import logf
 
 log = getLogger(__name__)
@@ -23,8 +23,13 @@ ch.setFormatter(logf.LogFormatter())
 log.addHandler(ch)
 
 #  --- Configuration ---
+"""
+If the configuration of the QNet system is changed, update the values below to define the connection properties.
+"""
 MQTT_BROKER = "qnet.local"
 MQTT_PORT = 1883
+
+# Generates a unique ID for this Outstation
 DEVICE_ID = "qlite-" + hex(uuid.getnode())[2:]
 
 # GPIO Pin Configuration
@@ -66,22 +71,21 @@ class LedController(threading.Thread):
             elif state == State.STANDBY:
                 GPIO.output(GREEN_LED_PIN, GPIO.LOW)
 
-                for _ in range(50):  # 0.5s in 10ms chunks
+                for _ in range(25):  # 0.25s in 10ms chunks
                     if self._state != State.STANDBY or self._stop_event.is_set():
                         break
                     GPIO.output(RED_LED_PIN, GPIO.HIGH)
                     time.sleep(0.01)
 
-                for _ in range(50):
+                for _ in range(25):
                     if self._state != State.STANDBY or self._stop_event.is_set():
                         break
                     GPIO.output(RED_LED_PIN, GPIO.LOW)
                     time.sleep(0.01)
 
-        # Final cleanup on thread stop
+        # Final clean-up on thread stop
         GPIO.output(RED_LED_PIN, GPIO.LOW)
         GPIO.output(GREEN_LED_PIN, GPIO.LOW)
-
 
     def set_state(self, new_state):
         """Thread-safe method to change the LED state"""
@@ -101,7 +105,7 @@ class LedController(threading.Thread):
                     GPIO.output(GREEN_LED_PIN, GPIO.HIGH)
 
     def stop(self):
-        """Stop the LED thread"""
+        """Set the stop event to end the LED thread"""
         self._stop_event.set()
 
 
@@ -109,6 +113,12 @@ class LedController(threading.Thread):
 class OutstationApp:
     def __init__(self):
         log.info("Initialising Outstation application...")
+        try:  # Attempt to disable power management
+            util.disable_power_save()
+            log.info("Power management disabled successfully")
+        except ChildProcessError as e:
+            log.warning(f"Failed to disable power management: {e.strerror}")
+
         self.client = mqtt.Client(client_id=DEVICE_ID, callback_api_version=mqtt.CallbackAPIVersion.VERSION2)
         self.led_controller = LedController()
         self.current_state = State.IDLE
@@ -129,7 +139,7 @@ class OutstationApp:
         GPIO.add_event_detect(BUTTON_PIN, GPIO.FALLING, callback=self.button_pressed_callback, bouncetime=200)
         log.info("GPIO setup complete")
 
-        time.sleep(2) # Give the GPIO time to settle
+        time.sleep(2)  # Give the GPIO time to settle
 
     def _setup_mqtt(self):
         """Sets up MQTT callbacks and connection"""
@@ -158,6 +168,8 @@ class OutstationApp:
             log.info(f"Published online status to {self.status_topic}")
 
             # Once the system is settled, extinguish the LEDs to inform the user it is ready
+            # If both LEDs remain on after powering up the device, the user can know there was
+            # a problem
             GPIO.output(RED_LED_PIN, GPIO.LOW)
             GPIO.output(GREEN_LED_PIN, GPIO.LOW)
         else:
